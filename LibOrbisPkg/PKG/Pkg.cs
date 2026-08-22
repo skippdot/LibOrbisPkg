@@ -87,7 +87,10 @@ namespace LibOrbisPkg.PKG
           imageKeyDecrypted.Length,
           iv_key.Skip(16).Take(16).ToArray(),
           iv_key.Take(16).ToArray());
-        return Crypto.RSA2048Decrypt(imageKeyDecrypted, RSAKeyset.FakeKeyset);
+        byte[] ekpfs = Crypto.RSA2048Decrypt(imageKeyDecrypted, RSAKeyset.FakeKeyset);
+        if (ekpfs.Length != 0x20 || !EntryKeys.Keys[1].digest.SequenceEqual(Crypto.Xor(Crypto.Sha256(ekpfs), ekpfs)))
+          throw new Exception("Decrypted fake EEKPFS is invalid");
+        return ekpfs;
       }
       catch
       {
