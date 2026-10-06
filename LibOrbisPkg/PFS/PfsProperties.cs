@@ -56,10 +56,9 @@ namespace LibOrbisPkg.PFS
     public static PfsProperties MakeOuterPFSProps(PKG.PkgProperties props, PfsBuilder innerPFS, byte[] EKPFS, bool encrypt = true)
     {
       var root = new FSDir();
-      root.Files.Add(new FSFile(innerPFS)
-      {
-        Parent = root,
-      });
+      var image = props.InnerPfscImage != null ? new FSFile(innerPFS, props.InnerPfscImage) : new FSFile(innerPFS);
+      image.Parent = root;
+      root.Files.Add(image);
       return new PfsProperties()
       {
         root = root,

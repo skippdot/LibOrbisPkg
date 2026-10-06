@@ -47,6 +47,12 @@ namespace LibOrbisPkg.PKG
     /// </summary>
     public PFS.FSDir RootDir;
 
+    /// <summary>
+    /// Optional path to a PFSC-compressed copy of the inner PFS image built from this same
+    /// project. When set, it is embedded as pfs_image.dat instead of the raw image.
+    /// </summary>
+    public string InnerPfscImage;
+
     public static PkgProperties FromGp4(GP4.Gp4Project project, string projDir)
     {
       DateTime CreationDate;

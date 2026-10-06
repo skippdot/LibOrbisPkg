@@ -167,6 +167,29 @@ namespace LibOrbisPkg.PFS
     }
 
     /// <summary>
+    /// Creates an FSFile for pfs_image.dat from an already PFSC-compressed copy of the image
+    /// that the given PfsBuilder would produce.
+    /// </summary>
+    public FSFile(PfsBuilder b, string pfscPath)
+    {
+      var logicalSize = b.CalculatePfsSize();
+      using (var f = File.OpenRead(pfscPath))
+      {
+        var hdr = new byte[0x30];
+        for (int got = 0, n; got < hdr.Length; got += n)
+          if ((n = f.Read(hdr, got, hdr.Length - got)) <= 0) throw new EndOfStreamException(pfscPath);
+        var dataLength = System.BitConverter.ToInt64(hdr, 0x28);
+        if (System.Text.Encoding.ASCII.GetString(hdr, 0, 4) != "PFSC" || dataLength != logicalSize)
+          throw new System.Exception($"{pfscPath} is not a PFSC image of this project (logical size {dataLength}, expected {logicalSize})");
+      }
+      Write = s => { using (var f = File.OpenRead(pfscPath)) f.CopyTo(s); };
+      Size = new FileInfo(pfscPath).Length;
+      _compressedSize = logicalSize;
+      name = "pfs_image.dat";
+      Compress = true;
+    }
+
+    /// <summary>
     /// A generic constructor for anything that can be written to a stream.
     /// Don't forget to set the inode and parent.
     /// </summary>

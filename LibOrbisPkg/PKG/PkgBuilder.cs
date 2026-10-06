@@ -243,6 +243,26 @@ namespace LibOrbisPkg.PKG
     /// <summary>
     /// Creates the Pkg object. Initializes the header and body.
     /// </summary>
+    /// <summary>
+    /// pfs_cache_size in blocks for a PFSC inner image: PFSC header/table blocks + outer indirect
+    /// blocks of pfs_image.dat + 7. Reproduces two compressed reference fpkgs exactly (25, 149).
+    /// </summary>
+    private static long PfscCacheBlocks(string pfscPath)
+    {
+      const long blockSize = 0x10000, sigsPerBlock = blockSize / 36;
+      var hdr = new byte[0x30];
+      using (var f = File.OpenRead(pfscPath))
+        for (int got = 0, n; got < hdr.Length; got += n)
+          if ((n = f.Read(hdr, got, hdr.Length - got)) <= 0) throw new EndOfStreamException(pfscPath);
+      long headerSize = BitConverter.ToInt64(hdr, 0x20);
+      long blocks = (new FileInfo(pfscPath).Length + blockSize - 1) / blockSize;
+      long indirect = 0;
+      if (blocks > 12) indirect++;
+      if (blocks > 12 + sigsPerBlock)
+        indirect += 1 + (blocks - 12 - sigsPerBlock + sigsPerBlock - 1) / sigsPerBlock;
+      return headerSize / blockSize + indirect + 7;
+    }
+
     public void BuildPkg(long pfsSize)
     {
       pkg = new Pkg();
@@ -291,6 +311,8 @@ namespace LibOrbisPkg.PKG
         pkg.Header.package_size = (ulong)(0x80000 + pfsSize);
         pkg.Header.pfs_signed_size = 0x10000;
         pkg.Header.pfs_cache_size = 0xD0000;
+        if (project.InnerPfscImage != null)
+          pkg.Header.pfs_cache_size = (uint)(PfscCacheBlocks(project.InnerPfscImage) * 0x10000);
         pkg.Header.pfs_image_digest = new byte[32];
         pkg.Header.pfs_signed_digest = new byte[32];
         pkg.Header.pfs_split_size_nth_0 = 0;

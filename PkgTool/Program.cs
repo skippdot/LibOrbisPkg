@@ -58,8 +58,8 @@ namespace PkgTool
       Verb.Create(
         "pkg_build",
         "Builds a fake PKG from the given GP4 project in the given output directory.",
-        ArgDef.Required("input_project.gp4", "output_directory"),
-        args =>
+        ArgDef.Multi(ArgDef.Option("pfsc"), "input_project.gp4", "output_directory"),
+        (_, optionals, args) =>
         {
           var proj = args[1];
           var project = Gp4Project.ReadFrom(File.OpenRead(proj));
@@ -86,6 +86,7 @@ namespace PkgTool
             return;
           }
           var props = PkgProperties.FromGp4(project, Path.GetDirectoryName(proj));
+          props.InnerPfscImage = optionals.ContainsKey("pfsc") ? optionals["pfsc"] : null;
           var outputPath = args[2];
           // Write through a FileStream: the memory-mapped path has been seen to drop pages
           // (zero-filled ranges, valid signatures) on >20 GB outputs under memory pressure.
