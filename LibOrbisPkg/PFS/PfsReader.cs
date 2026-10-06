@@ -177,6 +177,8 @@ namespace LibOrbisPkg.PFS
     }
 
     public PfsHeader Header => hdr;
+    /// <summary>Raw dinode by number, for inspecting block layout.</summary>
+    public inode GetInode(uint i) => dinodes[i];
 
     public File GetFile(string fullPath)
     {

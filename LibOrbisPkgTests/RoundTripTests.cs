@@ -1,0 +1,262 @@
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Reflection;
+using System.Threading;
+using LibOrbisPkg.GP4;
+using LibOrbisPkg.PFS;
+using LibOrbisPkg.PKG;
+using LibOrbisPkg.Util;
+
+namespace LibOrbisPkgTests
+{
+  /// <summary>
+  /// Build -> read round trips over the edge cases that real game packages hit:
+  /// block boundaries, indirect blocks, huge directories, name-hash collisions, PFSC.
+  /// </summary>
+  [TestClass]
+  public class RoundTripTests
+  {
+    const int Block = 0x10000;
+    const int SigsPerBlock = Block / 36;
+
+    static byte[] Content(string name, long size)
+    {
+      // Deterministic, mostly incompressible, different per file.
+      var data = new byte[size];
+      new Random(name.GetHashCode() ^ (int)size).NextBytes(data);
+      return data;
+    }
+
+    static FSDir MakeTree(IEnumerable<(string path, long size)> files)
+    {
+      var root = new FSDir();
+      foreach (var (path, size) in files)
+      {
+        var parts = path.Split('/');
+        var dir = root;
+        foreach (var d in parts.Take(parts.Length - 1))
+        {
+          var next = dir.Dirs.FirstOrDefault(x => x.name == d);
+          if (next == null)
+          {
+            next = new FSDir { name = d, Parent = dir };
+            dir.Dirs.Add(next);
+          }
+          dir = next;
+        }
+        var data = Content(path, size);
+        dir.Files.Add(new FSFile(s => s.Write(data, 0, data.Length), parts.Last(), size) { Parent = dir });
+      }
+      return root;
+    }
+
+    static PfsProperties InnerProps(FSDir root) => new PfsProperties
+    {
+      root = root,
+      BlockSize = Block,
+      Encrypt = false,
+      Sign = false,
+      FileTime = 1,
+    };
+
+    static byte[] BuildImage(PfsProperties props)
+    {
+      using (var ms = new MemoryStream())
+      {
+        new PfsBuilder(props).WriteImage(ms);
+        return ms.ToArray();
+      }
+    }
+
+    static byte[] ReadFile(PfsReader.File f)
+    {
+      var buf = new byte[f.size];
+      using (var v = f.GetView())
+        v.Read(0, buf, 0, buf.Length);
+      return buf;
+    }
+
+    static void AssertRoundTrip(IEnumerable<(string path, long size)> files, PfsReader reader)
+    {
+      var got = reader.GetURoot().GetAllFiles().ToDictionary(f => f.FullName.TrimStart('/'));
+      foreach (var (path, size) in files)
+      {
+        Assert.IsTrue(got.TryGetValue(path, out var f), $"missing {path}");
+        Assert.AreEqual(size, f.size, $"size of {path}");
+        CollectionAssert.AreEqual(Content(path, size), ReadFile(f), $"content of {path}");
+      }
+      Assert.AreEqual(files.Count(), got.Count, "file count");
+    }
+
+    [DataTestMethod]
+    [DataRow(0L)]
+    [DataRow(1L)]
+    [DataRow((long)Block - 1)]
+    [DataRow((long)Block)]
+    [DataRow((long)Block + 1)]
+    [DataRow(12L * Block)]
+    [DataRow(12L * Block + 1)]
+    [DataRow((12L + SigsPerBlock) * Block + 7)]
+    public void InnerPfs_FileSizesAroundBlockBoundaries(long size)
+    {
+      var files = new[] { ("a.bin", size), ("dir/b.bin", 3L), ("dir/sub/c.bin", size / 2) };
+      var img = BuildImage(InnerProps(MakeTree(files)));
+      AssertRoundTrip(files, new PfsReader(new TestHelper.ArrayMemoryReader(img)));
+    }
+
+    [TestMethod]
+    public void OuterPfs_SignedEncrypted_FileNeedsDoublyIndirectBlocks()
+    {
+      // > 12 direct + one block of indirect pointers -> exercises ib[1] in the signed layout.
+      long size = (12L + SigsPerBlock + 5) * Block + 123;
+      var files = new[] { ("pfs_image.dat", size) };
+      var ekpfs = new byte[32];
+      var props = new PfsProperties
+      {
+        root = MakeTree(files),
+        BlockSize = Block,
+        Encrypt = true,
+        Sign = true,
+        EKPFS = ekpfs,
+        Seed = new byte[16],
+        FileTime = 1,
+      };
+      using (var ms = new MemoryStream())
+      {
+        new PfsBuilder(props).WriteImage(ms);
+        AssertRoundTrip(files, new PfsReader(new LibOrbisPkg.Util.StreamReader(ms), 0, ekpfs));
+      }
+    }
+
+    [TestMethod]
+    public void InnerPfs_CaseOnlyNameCollisions_SpanMultipleBlocks()
+    {
+      // PFS path hashes upper-case names, so "x.xxx" and "X.XXX" collide. Thousands of such
+      // pairs make both flat_path_table and collision_resolver larger than one block.
+      var files = Enumerable.Range(0, 3000)
+        .SelectMany(i => new[] { ($"Asset/file_{i:D5}.xxx", 10L + i % 7), ($"Asset/FILE_{i:D5}.XXX", 20L + i % 5) })
+        .ToArray();
+      var root = MakeTree(files);
+      Assert.IsTrue(FlatPathTable.HasCollision(root.GetAllChildren()));
+      var img = BuildImage(InnerProps(root));
+      AssertRoundTrip(files, new PfsReader(new TestHelper.ArrayMemoryReader(img)));
+    }
+
+    [TestMethod]
+    public void InnerPfs_SpecialFilesUseRetailBlockConvention()
+    {
+      // Retail images: db[0] = start block, db[1..blocks-1] = -1 (contiguous), rest 0.
+      var files = Enumerable.Range(0, 3000)
+        .SelectMany(i => new[] { ($"Asset/file_{i:D5}.xxx", 1L), ($"Asset/FILE_{i:D5}.XXX", 1L) })
+        .ToArray();
+      var img = BuildImage(InnerProps(MakeTree(files)));
+      var reader = new PfsReader(new TestHelper.ArrayMemoryReader(img));
+      var specials = reader.GetSuperRoot().children.OfType<PfsReader.File>().ToList();
+      Assert.IsTrue(specials.Any(f => f.name == "collision_resolver"), "expected a collision resolver");
+      foreach (var f in specials)
+      {
+        var ino = reader.GetInode(f.ino);
+        Assert.IsTrue(ino.Blocks > 1 || f.name == "flat_path_table", $"{f.name} should span blocks in this test");
+        for (int i = 1; i < Math.Min(ino.Blocks, 12); i++)
+          Assert.AreEqual(-1, ino.DirectBlocks[i], $"{f.name} db[{i}]");
+      }
+    }
+
+    [TestMethod]
+    public void FlatPathTableHash_IsCultureInvariant()
+    {
+      var root = new FSDir();
+      root.Files.Add(new FSFile(s => { }, "file.bin", 0) { Parent = root });
+      root.Files.Add(new FSFile(s => { }, "FILE.BIN", 0) { Parent = root });
+      var saved = Thread.CurrentThread.CurrentCulture;
+      try
+      {
+        // In tr-TR, char.ToUpper('i') is U+0130, not 'I'.
+        Thread.CurrentThread.CurrentCulture = new CultureInfo("tr-TR");
+        Assert.IsTrue(FlatPathTable.HasCollision(root.GetAllChildren()),
+          "path hashes must not depend on the build machine's culture");
+      }
+      finally
+      {
+        Thread.CurrentThread.CurrentCulture = saved;
+      }
+    }
+
+    static byte[] MakePfsc(byte[] data, Func<int, bool> compressBlock)
+    {
+      int n = (data.Length + Block - 1) / Block;
+      long table = 8 + n * 8L;
+      long extra = ((table - 0xFC00) + 0xFFFF) / 0x10000;
+      long hdrSize = 0x10000 + (extra > 0 ? Block * extra : 0);
+      var blocks = new List<byte[]>();
+      for (int i = 0; i < n; i++)
+      {
+        var raw = new byte[Block];
+        Buffer.BlockCopy(data, i * Block, raw, 0, Math.Min(Block, data.Length - i * Block));
+        if (compressBlock(i))
+        {
+          using (var ms = new MemoryStream())
+          {
+            using (var z = new ZLibStream(ms, CompressionLevel.Optimal, true))
+              z.Write(raw, 0, raw.Length);
+            blocks.Add(ms.ToArray());
+          }
+        }
+        else blocks.Add(raw);
+      }
+      using (var o = new MemoryStream())
+      using (var w = new BinaryWriter(o))
+      {
+        w.Write(new byte[] { (byte)'P', (byte)'F', (byte)'S', (byte)'C' });
+        w.Write(0); w.Write(2); w.Write(Block); w.Write((long)Block);
+        w.Write(0x400L); w.Write(hdrSize); w.Write((long)n * Block);
+        o.Position = 0x400;
+        long off = hdrSize;
+        foreach (var b in blocks) { w.Write(off); off += b.Length; }
+        w.Write(off);
+        o.Position = hdrSize;
+        foreach (var b in blocks) w.Write(b);
+        return o.ToArray();
+      }
+    }
+
+    [TestMethod]
+    public void PfscReader_DecompressesMixedBlocksExactly()
+    {
+      // Highly compressible but non-trivial data: forces long deflate streams per block.
+      var data = new byte[40 * Block + 1234];
+      var rnd = new Random(7);
+      for (int i = 0; i < data.Length; i++)
+        data[i] = (byte)((i / 3) % 251 ^ (rnd.Next(16) == 0 ? rnd.Next(256) : 0));
+      var pfsc = MakePfsc(data, i => i % 3 != 2);
+      var reader = new PFSCReader(new TestHelper.ArrayMemoryReader(pfsc));
+      var got = new byte[data.Length];
+      reader.Read(0, got, 0, got.Length);
+      CollectionAssert.AreEqual(data, got);
+    }
+
+    [TestMethod]
+    public void ChunkShaAllocation_HoldsForAnyPfsSize()
+    {
+      // BuildPkg pre-allocates the PlayGo chunk hash entry from an estimate; the entry itself can
+      // push the body across a 0x80000 boundary. Sweep sizes where that happens (multi-GB pkgs)
+      // without writing anything.
+      var props = TestHelper.MakeProperties(VolumeType: VolumeType.pkg_ps4_app);
+      var builder = new PkgBuilder(props);
+      var inner = new PfsBuilder(PfsProperties.MakeInnerPFSProps(props));
+      typeof(PkgBuilder).GetField("innerPfs", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(builder, inner);
+      var failures = new List<long>();
+      for (long pfs = 1L << 30; pfs < 70L << 30; pfs += 37L * Block + 0x1234)
+      {
+        try { builder.BuildPkg(pfs); }
+        catch (Exception) { failures.Add(pfs); }
+      }
+      Assert.AreEqual(0, failures.Count, $"failed for {failures.Count} sizes, first {failures.FirstOrDefault()}");
+    }
+  }
+}
