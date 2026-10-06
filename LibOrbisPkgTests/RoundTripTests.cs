@@ -89,6 +89,21 @@ namespace LibOrbisPkgTests
       return string.Join("/", parts);
     }
 
+    static void AssertNoBlockOverlap(PfsReader reader)
+    {
+      // Every file (special ones included) must own a disjoint run of blocks.
+      var runs = reader.GetSuperRoot().children.OfType<PfsReader.File>()
+        .Concat(reader.GetURoot().GetAllFiles())
+        .Select(f => (f.name, ino: reader.GetInode(f.ino)))
+        .Where(x => x.ino.Blocks > 0)
+        .Select(x => (x.name, start: (long)x.ino.StartBlock, end: (long)x.ino.StartBlock + x.ino.Blocks))
+        .OrderBy(x => x.start)
+        .ToList();
+      for (int i = 1; i < runs.Count; i++)
+        Assert.IsTrue(runs[i].start >= runs[i - 1].end,
+          $"{runs[i - 1].name} [{runs[i - 1].start},{runs[i - 1].end}) overlaps {runs[i].name} at {runs[i].start}");
+    }
+
     static void AssertRoundTrip(IEnumerable<(string path, long size)> files, PfsReader reader)
     {
       var uroot = reader.GetURoot();
@@ -153,7 +168,9 @@ namespace LibOrbisPkgTests
       var root = MakeTree(files);
       Assert.IsTrue(FlatPathTable.HasCollision(root.GetAllChildren()));
       var img = BuildImage(InnerProps(root));
-      AssertRoundTrip(files, new PfsReader(new TestHelper.ArrayMemoryReader(img)));
+      var reader = new PfsReader(new TestHelper.ArrayMemoryReader(img));
+      AssertNoBlockOverlap(reader);
+      AssertRoundTrip(files, reader);
     }
 
     [TestMethod, TestCategory("Slow")]
@@ -172,6 +189,7 @@ namespace LibOrbisPkgTests
           var reader = new PfsReader(new LibOrbisPkg.Util.StreamReader(fs));
           var fpt = reader.GetSuperRoot().children.OfType<PfsReader.File>().First(f => f.name == "flat_path_table");
           Assert.IsTrue(reader.GetInode(fpt.ino).Blocks > 12, "test needs a >12 block flat path table");
+          AssertNoBlockOverlap(reader);
           AssertRoundTrip(files, reader);
         }
       }
