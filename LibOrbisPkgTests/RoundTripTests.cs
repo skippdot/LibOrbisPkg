@@ -81,12 +81,21 @@ namespace LibOrbisPkgTests
       return buf;
     }
 
+    static string RelPath(PfsReader.Node n, PfsReader.Dir uroot)
+    {
+      var parts = new List<string>();
+      for (; n != null && n != uroot; n = n.parent)
+        parts.Insert(0, n.name);
+      return string.Join("/", parts);
+    }
+
     static void AssertRoundTrip(IEnumerable<(string path, long size)> files, PfsReader reader)
     {
-      var got = reader.GetURoot().GetAllFiles().ToDictionary(f => f.FullName.TrimStart('/'));
+      var uroot = reader.GetURoot();
+      var got = uroot.GetAllFiles().ToDictionary(f => RelPath(f, uroot));
       foreach (var (path, size) in files)
       {
-        Assert.IsTrue(got.TryGetValue(path, out var f), $"missing {path}");
+        Assert.IsTrue(got.TryGetValue(path, out var f), $"missing {path}; have [{string.Join(", ", got.Keys.Take(5))}]");
         Assert.AreEqual(size, f.size, $"size of {path}");
         CollectionAssert.AreEqual(Content(path, size), ReadFile(f), $"content of {path}");
       }
