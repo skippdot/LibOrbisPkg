@@ -88,12 +88,23 @@ namespace LibOrbisPkg.GP4
           TargetPath = "sce_sys/" + entryName
         });
 
-        // Save to the filesystem
+        // Save to the filesystem. Some sce_sys entries (e.g. nptitle.dat, npbind.dat) are stored
+        // encrypted; writing the ciphertext out made rebuilt packages fail to launch
+        // ("invalid nptitle_dat", CE-33194-0), since the builder stores these entries in the clear.
+        var data = new byte[meta.DataSize];
         using (var s = pkgFile.CreateViewStream(meta.DataOffset, meta.DataSize, MemoryMappedFileAccess.Read))
-        using (var entryFile = File.Create(filename))
         {
-          s.CopyTo(entryFile);
+          for (int got = 0, n; got < data.Length; got += n)
+            if ((n = s.Read(data, got, data.Length - got)) <= 0)
+              throw new EndOfStreamException("Truncated package entry");
         }
+        if (meta.Encrypted)
+        {
+          data = meta.KeyIndex == 3
+            ? Entry.Decrypt(data, pkg, meta)
+            : Entry.Decrypt(data, pkg.Header.content_id, passcode, meta);
+        }
+        File.WriteAllBytes(filename, data);
       }
 
       // Fixup the param.sfo
