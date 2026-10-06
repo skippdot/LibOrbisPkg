@@ -249,6 +249,12 @@ namespace LibOrbisPkg.PFS
     /// </summary>
     public void WriteImage(Stream stream)
     {
+      // Size the image up front like the memory-mapped path does, so signing and XTS see the
+      // zero padding after the last file instead of hitting end-of-stream (the reused sector
+      // buffer then encrypted stale bytes into the final sector).
+      var start = stream.Position;
+      if (stream.CanSeek && stream.Length < start + CalculatePfsSize())
+        stream.SetLength(start + CalculatePfsSize());
       WriteData(stream);
 
       if (hdr.Mode.HasFlag(PfsMode.Signed))
@@ -259,7 +265,7 @@ namespace LibOrbisPkg.PFS
         {
           var sig_buffer = new byte[sig.Size];
           stream.Position = sig.Block * properties.BlockSize;
-          stream.Read(sig_buffer, 0, sig.Size);
+          stream.ReadFull(sig_buffer, 0, sig.Size);
           stream.Position = sig.SigOffset;
           stream.Write(Crypto.HmacSha256(signKey, sig_buffer), 0, 32);
           stream.WriteLE((int)sig.Block);
@@ -275,7 +281,7 @@ namespace LibOrbisPkg.PFS
         foreach (var xtsSector in XtsSectorGen())
         {
           stream.Position = xtsSector * xtsSectorSize;
-          stream.Read(sectorBuffer, 0, xtsSectorSize);
+          stream.ReadFull(sectorBuffer, 0, xtsSectorSize);
           transformer.EncryptSector(sectorBuffer, (ulong)xtsSector);
           stream.Position = xtsSector * xtsSectorSize;
           stream.Write(sectorBuffer, 0, xtsSectorSize);
@@ -480,13 +486,16 @@ namespace LibOrbisPkg.PFS
         hdr.Ndblock += super_root_ino.Blocks;
 
         // flat path table
-        fpt_ino.SetDirectBlock(0, (int)hdr.Ndblock++);
+        // Like regular files in an unsigned image: db[0] = start, the rest of the run is -1
+        // (retail convention; PfsReader rejected explicit block lists). Reserve every block,
+        // not just the first 12, so a large table cannot overlap the next file.
+        fpt_ino.SetDirectBlock(0, (int)hdr.Ndblock);
         fpt_ino.Size = fpt.Size;
         fpt_ino.SizeCompressed = fpt.Size;
         fpt_ino.Blocks = (uint)CeilDiv(fpt.Size, hdr.BlockSize);
-
         for (int i = 1; i < fpt_ino.Blocks && i < 12; i++)
-          fpt_ino.SetDirectBlock(i, (int)hdr.Ndblock++);
+          fpt_ino.SetDirectBlock(i, -1);
+        hdr.Ndblock += Math.Max(1, fpt_ino.Blocks);
 
         // DATs I've found include an empty block after the FPT if there's no collision resolver
         if(cr_ino == null)
@@ -496,13 +505,13 @@ namespace LibOrbisPkg.PFS
         else
         {
           // collision resolver
-          cr_ino.SetDirectBlock(0, (int)hdr.Ndblock++);
+          cr_ino.SetDirectBlock(0, (int)hdr.Ndblock);
           cr_ino.Size = colResolver.Size;
           cr_ino.SizeCompressed = colResolver.Size;
           cr_ino.Blocks = (uint)CeilDiv(colResolver.Size, hdr.BlockSize);
-
           for (int i = 1; i < cr_ino.Blocks && i < 12; i++)
-            cr_ino.SetDirectBlock(i, (int)hdr.Ndblock++);
+            cr_ino.SetDirectBlock(i, -1);
+          hdr.Ndblock += Math.Max(1, cr_ino.Blocks);
         }
 
         // Calculate length of all dirent blocks
