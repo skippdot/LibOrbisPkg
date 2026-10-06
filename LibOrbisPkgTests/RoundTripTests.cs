@@ -92,8 +92,9 @@ namespace LibOrbisPkgTests
     static void AssertNoBlockOverlap(PfsReader reader)
     {
       // Every file (special ones included) must own a disjoint run of blocks.
-      var runs = reader.GetSuperRoot().children.OfType<PfsReader.File>()
-        .Concat(reader.GetURoot().GetAllFiles())
+      IEnumerable<PfsReader.Node> All(PfsReader.Dir d) =>
+        new PfsReader.Node[] { d }.Concat(d.children.SelectMany(c => c is PfsReader.Dir cd ? All(cd) : new[] { c }));
+      var runs = All(reader.GetSuperRoot())
         .Select(f => (f.name, ino: reader.GetInode(f.ino)))
         .Where(x => x.ino.Blocks > 0)
         .Select(x => (x.name, start: (long)x.ino.StartBlock, end: (long)x.ino.StartBlock + x.ino.Blocks))

@@ -204,7 +204,7 @@ namespace LibOrbisPkg.PFS
     {
       // 100M blocks is enough for a 6TB file.
       const int MAX_BLOCKS = 100_000_000;
-      var ret = new Dir() { name = name, parent = parent };
+      var ret = new Dir() { name = name, parent = parent, ino = dinode };
       var ino = dinodes[dinode];
       var postLoad = new List<Func<Dir>>();
       var blocks = (int)ino.Blocks;
