@@ -253,7 +253,23 @@ namespace LibOrbisPkg.PFS
       {
         if (!hdr.Mode.HasFlag(PfsMode.Signed))
         {
-          throw new Exception("Unsigned PFS images probably shouldn't have noncontiguous blocks");
+          // Older LibOrbisPkg builds listed every block of the special files explicitly.
+          // Accept that as long as the run is contiguous; anything else is really unsupported.
+          var ino = dinodes[dinode];
+          for (int k = 1; k < ino.Blocks && k < 12; k++)
+            if (ino.DirectBlocks[k] != ino.StartBlock + k)
+              throw new Exception($"Unsigned PFS image has noncontiguous blocks in {name}");
+          return new File(reader)
+          {
+            name = name,
+            parent = parent,
+            offset = ino.StartBlock * hdr.BlockSize,
+            size = ino.Size,
+            compressed_size = ino.SizeCompressed,
+            ino = dinode,
+            flags = ino.Flags,
+            blockSize = (int)hdr.BlockSize,
+          };
         }
         blocks = new int[dinodes[dinode].Blocks];
         var remainingBlocks = (long)dinodes[dinode].Blocks;

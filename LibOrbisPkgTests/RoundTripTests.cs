@@ -157,6 +157,20 @@ namespace LibOrbisPkgTests
     }
 
     [TestMethod]
+    public void InnerPfs_FlatPathTableLargerThan12Blocks_DoesNotOverlapData()
+    {
+      // 8 bytes per table entry: > 12 * 64 KiB needs ~100k paths. Before the fix only the first
+      // 12 table blocks were reserved and the rest overlapped the next file's data.
+      var files = Enumerable.Range(0, 110000).Select(i => ($"d{i % 50}/f{i:D6}", 1L + i % 3)).ToArray();
+      var root = MakeTree(files);
+      var img = BuildImage(InnerProps(root));
+      var reader = new PfsReader(new TestHelper.ArrayMemoryReader(img));
+      var fpt = reader.GetSuperRoot().children.OfType<PfsReader.File>().First(f => f.name == "flat_path_table");
+      Assert.IsTrue(reader.GetInode(fpt.ino).Blocks > 12, "test needs a >12 block flat path table");
+      AssertRoundTrip(files, reader);
+    }
+
+    [TestMethod]
     public void InnerPfs_SpecialFilesUseRetailBlockConvention()
     {
       // Retail images: db[0] = start block, db[1..blocks-1] = -1 (contiguous), rest 0.
