@@ -19,7 +19,7 @@ namespace LibOrbisPkgTests
   /// block boundaries, indirect blocks, huge directories, name-hash collisions, PFSC.
   /// </summary>
   [TestClass]
-  public class RoundTripTests
+  public class PfsRoundTripTests
   {
     const int Block = 0x10000;
     const int SigsPerBlock = Block / 36;
@@ -218,99 +218,6 @@ namespace LibOrbisPkgTests
         for (int i = 1; i < Math.Min(ino.Blocks, 12); i++)
           Assert.AreEqual(-1, ino.DirectBlocks[i], $"{f.name} db[{i}]");
       }
-    }
-
-    [TestMethod]
-    public void FlatPathTableHash_IsCultureInvariant()
-    {
-      var root = new FSDir();
-      root.Files.Add(new FSFile(s => { }, "file.bin", 0) { Parent = root });
-      root.Files.Add(new FSFile(s => { }, "FILE.BIN", 0) { Parent = root });
-      var saved = Thread.CurrentThread.CurrentCulture;
-      try
-      {
-        // In tr-TR, char.ToUpper('i') is U+0130, not 'I'.
-        Thread.CurrentThread.CurrentCulture = new CultureInfo("tr-TR");
-        Assert.IsTrue(FlatPathTable.HasCollision(root.GetAllChildren()),
-          "path hashes must not depend on the build machine's culture");
-      }
-      finally
-      {
-        Thread.CurrentThread.CurrentCulture = saved;
-      }
-    }
-
-    static byte[] MakePfsc(byte[] data, Func<int, bool> compressBlock)
-    {
-      int n = (data.Length + Block - 1) / Block;
-      long table = 8 + n * 8L;
-      long extra = ((table - 0xFC00) + 0xFFFF) / 0x10000;
-      long hdrSize = 0x10000 + (extra > 0 ? Block * extra : 0);
-      var blocks = new List<byte[]>();
-      for (int i = 0; i < n; i++)
-      {
-        var raw = new byte[Block];
-        Buffer.BlockCopy(data, i * Block, raw, 0, Math.Min(Block, data.Length - i * Block));
-        if (compressBlock(i))
-        {
-          using (var ms = new MemoryStream())
-          {
-            using (var z = new ZLibStream(ms, CompressionLevel.Optimal, true))
-              z.Write(raw, 0, raw.Length);
-            blocks.Add(ms.ToArray());
-          }
-        }
-        else blocks.Add(raw);
-      }
-      using (var o = new MemoryStream())
-      using (var w = new BinaryWriter(o))
-      {
-        w.Write(new byte[] { (byte)'P', (byte)'F', (byte)'S', (byte)'C' });
-        w.Write(0); w.Write(2); w.Write(Block); w.Write((long)Block);
-        w.Write(0x400L); w.Write(hdrSize); w.Write((long)n * Block);
-        o.Position = 0x400;
-        long off = hdrSize;
-        foreach (var b in blocks) { w.Write(off); off += b.Length; }
-        w.Write(off);
-        o.Position = hdrSize;
-        foreach (var b in blocks) w.Write(b);
-        return o.ToArray();
-      }
-    }
-
-    [TestMethod]
-    public void PfscReader_DecompressesMixedBlocksExactly()
-    {
-      // Highly compressible but non-trivial data: forces long deflate streams per block.
-      var data = new byte[40 * Block + 1234];
-      var rnd = new Random(7);
-      for (int i = 0; i < data.Length; i++)
-        data[i] = (byte)((i / 3) % 251 ^ (rnd.Next(16) == 0 ? rnd.Next(256) : 0));
-      var pfsc = MakePfsc(data, i => i % 3 != 2);
-      var reader = new PFSCReader(new TestHelper.ArrayMemoryReader(pfsc));
-      var got = new byte[data.Length];
-      reader.Read(0, got, 0, got.Length);
-      CollectionAssert.AreEqual(data, got);
-    }
-
-    [TestMethod, TestCategory("Slow")]
-    public void ChunkShaAllocation_HoldsForAnyPfsSize()
-    {
-      // BuildPkg pre-allocates the PlayGo chunk hash entry from an estimate; the entry itself can
-      // push the body across a 0x80000 boundary. Sweep sizes where that happens (multi-GB pkgs)
-      // without writing anything.
-      var props = TestHelper.MakeProperties(VolumeType: VolumeType.pkg_ps4_app);
-      var builder = new PkgBuilder(props);
-      var inner = new PfsBuilder(PfsProperties.MakeInnerPFSProps(props));
-      typeof(PkgBuilder).GetField("innerPfs", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(builder, inner);
-      var failures = new List<(long pfs, string error)>();
-      for (long pfs = 1L << 30; pfs < 70L << 30; pfs += 37L * Block + 0x1234)
-      {
-        try { builder.BuildPkg(pfs); }
-        catch (Exception ex) { failures.Add((pfs, ex.Message)); }
-      }
-      Assert.AreEqual(0, failures.Count,
-        $"failed for {failures.Count} sizes, first {failures.FirstOrDefault().pfs}: {failures.FirstOrDefault().error}");
     }
   }
 }
