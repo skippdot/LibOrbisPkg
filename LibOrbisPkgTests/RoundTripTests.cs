@@ -293,7 +293,7 @@ namespace LibOrbisPkgTests
       CollectionAssert.AreEqual(data, got);
     }
 
-    [TestMethod]
+    [TestMethod, TestCategory("Slow")]
     public void ChunkShaAllocation_HoldsForAnyPfsSize()
     {
       // BuildPkg pre-allocates the PlayGo chunk hash entry from an estimate; the entry itself can
@@ -303,13 +303,14 @@ namespace LibOrbisPkgTests
       var builder = new PkgBuilder(props);
       var inner = new PfsBuilder(PfsProperties.MakeInnerPFSProps(props));
       typeof(PkgBuilder).GetField("innerPfs", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(builder, inner);
-      var failures = new List<long>();
+      var failures = new List<(long pfs, string error)>();
       for (long pfs = 1L << 30; pfs < 70L << 30; pfs += 37L * Block + 0x1234)
       {
         try { builder.BuildPkg(pfs); }
-        catch (Exception) { failures.Add(pfs); }
+        catch (Exception ex) { failures.Add((pfs, ex.Message)); }
       }
-      Assert.AreEqual(0, failures.Count, $"failed for {failures.Count} sizes, first {failures.FirstOrDefault()}");
+      Assert.AreEqual(0, failures.Count,
+        $"failed for {failures.Count} sizes, first {failures.FirstOrDefault().pfs}: {failures.FirstOrDefault().error}");
     }
   }
 }
