@@ -1,6 +1,7 @@
 """Verify a merged pkg build.
 
-verify_merged.py <work>                -> files extracted to <work>/verify match <work>/merged sources byte-for-byte
+verify_merged.py <work> [--project <dir>] -> files extracted to <work>/verify match the project's sources
+                                          (default <work>/merged) byte-for-byte
 verify_merged.py <work> <image.pfsc>   -> PFSC pulled back out of the pkg decompresses (zlib, adler32-checked)
                                           to exactly <work>/inner.dat
 """
@@ -30,11 +31,13 @@ def check_pfsc(work, pfsc):
     sys.exit(1 if bad else 0)
 
 
-def check_files(work):
+def check_files(work, project=None):
     def files(gp4):
         return {f.get("targ_path"): f.get("orig_path") for f in ET.parse(gp4).getroot().iter("file")}
 
-    src = files(os.path.join(work, "merged", "Project.gp4"))
+    proj = project or os.path.join(work, "merged")
+    src = {t: (o if os.path.isabs(o) else os.path.join(proj, o))
+           for t, o in files(os.path.join(proj, "Project.gp4")).items()}
     out = files(os.path.join(work, "verify", "Project.gp4"))
     missing, extra = set(src) - set(out), set(out) - set(src)
     bad = [t for t in src if t in out
@@ -44,7 +47,9 @@ def check_files(work):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2:
+    if len(sys.argv) > 3 and sys.argv[2] == "--project":
+        check_files(sys.argv[1], sys.argv[3])
+    elif len(sys.argv) > 2:
         check_pfsc(sys.argv[1], sys.argv[2])
     else:
         check_files(sys.argv[1])

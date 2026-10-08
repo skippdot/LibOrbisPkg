@@ -18,31 +18,4 @@ echo "== merge gp4"
 cp "$TOOLS/make_merged_gp4.py" "$WORK/"
 python3 "$WORK/make_merged_gp4.py" "$T"
 
-COMPRESS=${COMPRESS:-1}
-PFSC_ARGS=()
-if [ "$COMPRESS" = 1 ]; then
-  echo "== inner image + PFSC"
-  (cd "$WORK/merged" && "$T" pfs_buildinner Project.gp4 "$WORK/inner.dat" >/dev/null)
-  python3 "$TOOLS/pfsc_compress.py" "$WORK/inner.dat" "$WORK/inner.pfsc" | tail -1
-  PFSC_ARGS=(--pfsc "$WORK/inner.pfsc")
-fi
-
-echo "== pkg build"
-mkdir -p "$WORK/out"
-rm -f "$WORK"/out/*.pkg
-(cd "$WORK/merged" && "$T" pkg_build ${PFSC_ARGS[@]+"${PFSC_ARGS[@]}"} Project.gp4 "$WORK/out" | tail -1)
-BUILT=$(ls "$WORK"/out/*.pkg)
-
-echo "== verify"
-errors=$("$T" pkg_validate "$BUILT" 2>&1 | grep -c ERROR || true)
-[ "$errors" = 0 ] || { echo "pkg_validate: $errors errors"; exit 1; }
-rm -rf "$WORK/verify" "$WORK/verify.pfsc"
-if [ "$COMPRESS" = 1 ]; then
-  "$T" pkg_extractinnerpfs --compressed --passcode 00000000000000000000000000000000 "$BUILT" "$WORK/verify.pfsc"
-  python3 "$TOOLS/verify_merged.py" "$WORK" "$WORK/verify.pfsc"
-fi
-"$T" pkg_makegp4 "$BUILT" "$WORK/verify" >/dev/null
-python3 "$TOOLS/verify_merged.py" "$WORK"
-
-mv "$BUILT" "$OUT"
-echo "OK -> $OUT ($(stat -f %z "$OUT") bytes)"
+"$TOOLS/build_pkg.sh" "$WORK/merged" "$WORK" "$OUT"
